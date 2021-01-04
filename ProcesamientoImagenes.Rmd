@@ -1,0 +1,294 @@
+---
+title: "Procesamiento de imágenes UAV"
+author: "Alexandra Dillchneider, Yanina Bellini Saibene"
+date: "25/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+#Proceso de imágenes UAV
+
+El proceso completo de procesamiento de las imágenes tiene los siguientes pasos:
+
+## Primera etapa
+1. Matias envía las imagenes del vuelo.
+2. Cargamos todas las bandas enviadas como están: tenemos un archivo por banda y no contamos con la banda azul.
+3. Cargamos los poligonos completos de los lotes: tenemos dos lotes: el lote 6 y el lote 18, también tenemos cada uno de los lotes separados en parcelas, donde hay mas de un polígono para cada parcela.
+4. Repoyectamos todas las bandas a la proyección del lote (hacer función)
+5. Cortamos las bandas a la extensión del lote (aún sin programar)
+6. Unificamos resolución de las bandas (origin)
+7. Calculamos los indices con las funciones (revisar si tenemos todos los indices programados)
+
+## Segunda etapa
+
+1. Leer los polígonos de las parcelas.
+2. Analizar filtros de ruido (suelo desnudo, rastrojo...no vegetales vivo)
+3. Sacar el máximo, minimo, promedio y moda de cada parcela para el índice calculado.
+3.1. Tener en cuenta de retirar los valores correspondientes a suelo desnudo en algunas etapas tempranas del cultivo.
+4. Agregar estos datos al dataset con los datos de campo para el análisis
+
+
+Se debe tener instalado los paquetes raster y rgdal
+
+```{r librerias, message=FALSE, warning=FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+library(stars)
+library(rgdal)
+```
+
+#Funciones para indices de vegetacion
+
+Generamos una serie de funciones para poder realizar los cálculos de los indices de interés a analizar. Autoras: Priscilla Minotti, Yanina Bellini Saibene y Alexandra Di..:
+
+Para que estén disponibles para utilizarlas debemos seleccionarlas y ejecutarlas.  Los parámetros de las funciones son: 
+
+* b = banda azul 
+* g = banda verde 
+* r = banda roja 
+* re = banda red edge 
+* nir = banda infrarrojo cercano
+
+
+```{r funciones_indices}
+
+#Indice Verde Normalizado NDVI
+
+NDVI <- function(nir,r){
+  vi= (nir-r)/(nir+r)
+  vi
+}
+
+#NDVI con banda verde
+
+NDVIg <- function(nir,g){
+  vi= (nir-g)/(nir+g)
+  vi
+}
+
+#Diferencia normalizada verde-rojo
+
+NGRDI <- function(g,r){
+  vi= (g-r)/(g+r)
+  vi
+}
+
+#Indice de Clorofila basado en verde
+
+CL <- function(nir,g){
+  vi= (nir/g)-1
+  vi
+}
+
+#Indice de clorofila basado en red-edge
+
+CLre <- function(nir,re){
+  vi= (nir/re)-1
+  vi
+}
+
+#Indice de clorofila de la vegetación
+
+IVC <- function(nir,r, g){
+  
+  vi = (nir/g)*(r/g)
+  
+}
+
+#Idice de Brillo
+
+BI <- function(g,r,nir){
+  vi= (nir+r+g)^(1/3) 
+  vi
+}
+
+#Indice de Coloracion
+
+CI <- function(nir,g){
+  vi= (nir-g)/nir
+  vi
+}
+
+#Indice verde mejorado de dos bandas
+
+EVI2 <- function(nir,r){
+  vi= 2.5 *(nir-r)/(nir+2.4*r+1)
+  vi
+
+}
+
+
+
+# La siguiente función la generamos Alexandra y Yanina:
+#Indice Soil Adjusted Vegetation Index
+SAVI <- function(nir,r,L){
+  vi= ((nir-r)/(nir+r+L))*(1+L)
+  vi
+}
+
+#PSRI
+PSRI <- function(g,r,re){
+  vi = (r-g)/re
+  vi
+}
+
+```
+
+Luego tenemos dos funciones de ayuda para graficar las imagenes en escala de grises y con colores:
+
+```{r graficadores}
+
+#ploteo simple con paleta en escala de gris - Priscilla
+pgris <- function(VI){
+  plot(VI,
+       col=grey(0:255/255),  #rampa de grises
+       legend=FALSE,
+       main= quote(VI),
+       axes=FALSE)
+}
+
+#ploteo de imágen con colores - Yanina
+
+pcolor <- function(VI){
+  plot(VI,
+       palette(c("red", "#4682B4","#f99e59","#fec980","#ffedaa","#edf8b9","#33a02c","#00ff33","#008605","#025100")))
+       legend=FALSE
+       main= quote(VI)
+       axes=FALSE
+}
+
+pcolor_sinrango <- function(VI){
+  plot(VI,
+       main = "",
+       axes = FALSE, 
+       box = FALSE)
+}
+
+```
+
+Esta función acomoda todas las imágenes para que tengan las mismas propiedades: extención, proyección y origen.
+
+```{r propiedades_img}
+
+proyeccion_img <- function(poligono,img){
+
+  #Le damos el CRS (proyección) del poligono a la imágen
+  # new_proy <- crs(poligono)
+  #print(new_proy)
+  if(!compareCRS(img, poligono)){
+    # crs(img) <- new_proy
+    img <- projectRaster(img, crs = crs(poligono))
+    print('Cambiamos la proyección')
+  }
+  img
+}
+
+extension_img <- function(poligono, img){
+  
+  #Ponemos la misma extensión
+  img <- setExtent(img,extent(poligono))
+  print('Cambiamos la extensión')
+  img
+  
+}
+
+resolucion_img <- function(imgRes, img){
+  
+  original <- origin(imgRes)
+  a_cambiar <- origin(img)
+  
+  if(original[[1]]==a_cambiar[[1]] && original[[2]]==a_cambiar[[2]]){
+      print('Sin transformar porque tienen el mismo origen')
+  }
+  else{
+    print('Resampleando la imagen')  
+    img <- resample(img,imgRes,method = "bilinear")
+  }
+  
+  img
+}
+
+```
+
+
+Ahora tenemos que empezar a leer los datos necesarios para trabajar, cargamos los poligonos de los dos lotes en los objetos `lote6` y `lote18` 
+
+```{r lectura_archivos}
+
+lote6 <- st_read("C:/Users/ale93/Google Drive/IMAGENES/Poligonos completos/POLI_L6.shp")
+lote6_extent <- readOGR("C:/Users/ale93/Google Drive/IMAGENES/Poligonos completos/POLI_L6.shp")
+lote18 <- st_read("C:/Users/ale93/Google Drive/IMAGENES/Poligonos completos/POLI_L18.shp")
+lote18_extent <- readOGR("C:/Users/ale93/Google Drive/IMAGENES/Poligonos completos/POLI_L18.shp")
+
+
+plot(lote18_extent,
+     main = "Shapefile imported into R - lote18 extent",
+     axes = TRUE,
+     border = "blue")
+
+plot(lote18,
+     main = "Shapefile imported into R - lote18 extent",
+     axes = TRUE,
+     border = "blue")
+
+plot(lote6_extent,
+     main = "Shapefile imported into R - lote6 extent",
+     axes = TRUE,
+     border = "blue")
+
+plot(lote6,
+     main = "Shapefile imported into R - lote6 extent",
+     axes = TRUE,
+     border = "blue")
+
+# Guardo los nombres de todos los archivos con extensión geoTIFF
+data_path <- "C:/Users/ale93/Google Drive/IMAGENES/Imagenes_Cebada_L18"
+archivoImgs <- dir(data_path, pattern = "nir|red|green|reg|blue.tif$")
+
+# Tomo la primera imagen de todas para definir la resolucion
+
+img_proc <- archivoImgs %>%
+  map(~ raster(file.path(data_path, .))) 
+
+
+
+#Pongo todas las imágenes en la misma resolución
+# y corto las imagenes al tamaño del lote
+
+img_proc <- img_proc %>%
+  map(~ proyeccion_img(lote18,.)) %>%
+  map(~ mask(.,lote18)) %>%
+  # map(~ extension_img(lote18,.))  %>%
+  map(~ crop(., lote18_extent)) 
+
+imgRes <- img_proc[[1]]
+
+img_proc <- img_proc %>%
+  map(~ resolucion_img(imgRes,.))
+
+
+img_proc %>%
+  map(~ pcolor(.)) %>%
+  map(~writeRaster(., filename= paste("C:/Users/ale93/Google Drive/IMAGENES/Imagenes_Cebada_L18",names(.),"_cortado.tif"), format="GTiff", overwrite=TRUE))
+
+
+# writeRaster(img_proc[[1]], filename= paste("./IMG/",names(img_proc[[1]]) ,"_cortado.tif"), format="GTiff", overwrite=TRUE)
+
+# plot(img_proc[[1]], main = "Imagen cortada?")
+# # add shapefile on top of the existing raster
+# plot(lote18_extent, add = TRUE)
+
+
+# Ahora calculamos todos los indices para el lote cortado
+
+
+miSAVI <- SAVI()
+
+
+```
+

@@ -1,0 +1,11 @@
+Package: AgDrone
+Type: Package
+Title: Procesa imágenes de drones para uso agropecuario
+Version: 0.1.0
+Author: Yanina Bellini Saibene, Alexandra Dillchneider
+Maintainer: Yanina Bellini Saibene <yabellini@gmail.com>
+Description: More about what it does (maybe more than one line)
+    Use four spaces when indenting paragraphs within the Description.
+License: What license is it under?
+Encoding: UTF-8
+LazyData: true
